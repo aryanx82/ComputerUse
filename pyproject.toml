@@ -1,0 +1,13 @@
+[project]
+name = "computer-use-tool"
+version = "0.1.0"
+description = "Cross-device MCP server for AI computer interaction (screenshot, click, type)"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.2.0",
+    "pillow>=10.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.scripts]
+computer-use-tool = "src.server:main"

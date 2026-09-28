@@ -1,0 +1,9 @@
+[safety]
+strict_mode = true
+
+[rate_limits]
+max_requests_per_minute = 60
+
+[screenshot]
+default_format = "jpeg"
+default_scale = 1.0

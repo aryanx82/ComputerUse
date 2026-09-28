@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+env/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Swift / SPM
+native/.build/
+.swiftpm/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Runtime files
+audit.log
+*.sock
+*.log
