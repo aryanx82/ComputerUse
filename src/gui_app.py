@@ -1,7 +1,7 @@
 """
-computerUse Desktop Application — GUI Control Center
-Provides a graphical interface to view device status, inspect live screen previews,
-toggle the emergency kill-switch, copy AI configurations, and manage the MCP server.
+computerUse Desktop Application — GUI Control Center with Direct Command Runner
+Allows direct, AI-free control of Mac and Android devices through natural commands,
+quick macros, visual screen previews, and safety controls.
 """
 
 import sys
@@ -10,13 +10,14 @@ import time
 import json
 import base64
 import io
+import re
+import shlex
 import threading
 import subprocess
 import tkinter as tk
 from tkinter import ttk, messagebox
 from PIL import Image, ImageTk
 
-# Ensure project root is in python path
 SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
@@ -30,9 +31,9 @@ class ComputerUseApp(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        self.title("computerUse — Cross-Device AI Control Center")
-        self.geometry("960x740")
-        self.minsize(860, 680)
+        self.title("computerUse — Cross-Device Control Center")
+        self.geometry("1060x800")
+        self.minsize(940, 720)
 
         # Apply dark theme styling
         self.configure(bg="#181825")
@@ -51,6 +52,7 @@ class ComputerUseApp(tk.Tk):
 
         self._preview_image = None
         self._is_testing = False
+        self._is_executing_command = False
 
         self._build_ui()
         self._refresh_device_list()
@@ -66,7 +68,7 @@ class ComputerUseApp(tk.Tk):
         except Exception:
             pass
 
-        # Colors
+        # Colors (Catppuccin Macchiato palette)
         self.bg_dark = "#181825"
         self.panel_bg = "#1e1e2e"
         self.card_bg = "#313244"
@@ -76,18 +78,15 @@ class ComputerUseApp(tk.Tk):
         self.accent_green = "#a6e3a1"
         self.accent_red = "#f38ba8"
         self.accent_amber = "#f9e2af"
+        self.accent_purple = "#cba6f7"
 
         self.style.configure(".", background=self.panel_bg, foreground=self.text_light, font=("Helvetica", 11))
         self.style.configure("TLabel", background=self.panel_bg, foreground=self.text_light)
         self.style.configure("Card.TFrame", background=self.panel_bg)
-        self.style.configure("Header.TLabel", font=("Helvetica", 16, "bold"), foreground="#ffffff")
-        self.style.configure("SubHeader.TLabel", font=("Helvetica", 11), foreground=self.text_dim)
-        self.style.configure("Section.TLabel", font=("Helvetica", 12, "bold"), foreground=self.accent_blue)
-        self.style.configure("Status.TLabel", font=("Helvetica", 10, "bold"))
 
     def _build_ui(self):
         # ── Top App Bar ──────────────────────────────────────────────
-        top_bar = tk.Frame(self, bg="#11111b", height=70, padx=20, pady=12)
+        top_bar = tk.Frame(self, bg="#11111b", height=65, padx=20, pady=10)
         top_bar.pack(fill=tk.X)
 
         title_frame = tk.Frame(top_bar, bg="#11111b")
@@ -104,7 +103,7 @@ class ComputerUseApp(tk.Tk):
 
         subtitle_lbl = tk.Label(
             title_frame,
-            text="Cross-Device AI Control Bridge (Mac & Android)",
+            text="Direct Command & Hardware Control Center (Mac & Android)",
             font=("Helvetica", 10),
             fg="#a6adc8",
             bg="#11111b"
@@ -114,7 +113,7 @@ class ComputerUseApp(tk.Tk):
         # Daemon Status Badge
         self.status_badge = tk.Label(
             top_bar,
-            text="● SYSTEM ACTIVE",
+            text="● ENGINE ACTIVE",
             font=("Helvetica", 11, "bold"),
             fg=self.accent_green,
             bg="#181825",
@@ -125,172 +124,229 @@ class ComputerUseApp(tk.Tk):
         self.status_badge.pack(side=tk.RIGHT, pady=6)
 
         # ── Main Content Area ────────────────────────────────────────
-        main_frame = tk.Frame(self, bg=self.bg_dark, padx=16, pady=16)
+        main_frame = tk.Frame(self, bg=self.bg_dark, padx=14, pady=12)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Left Column (Device list, Safety, Host configs)
-        left_col = tk.Frame(main_frame, bg=self.bg_dark, width=420)
-        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
+        # Left Column (Command Bar, Quick Actions, Console)
+        left_col = tk.Frame(main_frame, bg=self.bg_dark, width=540)
+        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
 
-        # Right Column (Screen preview, Diagnostics)
-        right_col = tk.Frame(main_frame, bg=self.bg_dark)
+        # Right Column (Screen preview, Devices, Safety)
+        right_col = tk.Frame(main_frame, bg=self.bg_dark, width=440)
         right_col.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
-        self._build_devices_card(left_col)
-        self._build_safety_card(left_col)
-        self._build_ai_config_card(left_col)
+        self._build_command_card(left_col)
+        self._build_quick_actions_card(left_col)
+        self._build_console_card(left_col)
 
         self._build_preview_card(right_col)
-        self._build_diagnostics_card(right_col)
+        self._build_devices_card(right_col)
+        self._build_safety_card(right_col)
 
-    def _build_devices_card(self, parent):
+    # ── Command Bar Card ─────────────────────────────────────────────
+
+    def _build_command_card(self, parent):
         card = tk.LabelFrame(
             parent,
-            text="  📱 Connected Hardware Devices  ",
+            text="  ⚡ Direct Command Runner (No AI Needed)  ",
             font=("Helvetica", 11, "bold"),
             fg=self.accent_blue,
             bg=self.panel_bg,
             padx=12,
             pady=10
         )
-        card.pack(fill=tk.X, pady=(0, 12))
+        card.pack(fill=tk.X, pady=(0, 10))
 
-        self.device_listbox = tk.Listbox(
-            card,
+        row1 = tk.Frame(card, bg=self.panel_bg)
+        row1.pack(fill=tk.X, pady=(0, 8))
+
+        tk.Label(row1, text="Target Device:", font=("Helvetica", 10, "bold"), bg=self.panel_bg).pack(side=tk.LEFT, padx=(0, 6))
+
+        self.cmd_device_var = tk.StringVar(value="mac-primary")
+        self.cmd_device_cb = ttk.Combobox(
+            row1,
+            textvariable=self.cmd_device_var,
+            state="readonly",
+            width=22
+        )
+        self.cmd_device_cb.pack(side=tk.LEFT, padx=(0, 10))
+        self.cmd_device_cb.bind("<<ComboboxSelected>>", self._on_cmd_device_change)
+
+        help_lbl = tk.Label(
+            row1,
+            text="Commands: open, type, click, press, url, scroll",
+            font=("Helvetica", 9),
+            fg=self.text_dim,
+            bg=self.panel_bg
+        )
+        help_lbl.pack(side=tk.RIGHT)
+
+        # Input Entry + Run Button
+        row2 = tk.Frame(card, bg=self.panel_bg)
+        row2.pack(fill=tk.X)
+
+        self.cmd_entry = tk.Entry(
+            row2,
+            font=("Menlo", 12),
+            bg=self.card_bg,
+            fg="#ffffff",
+            insertbackground="#ffffff",
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground="#45475a",
+            highlightcolor=self.accent_blue
+        )
+        self.cmd_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8), ipady=6)
+        self.cmd_entry.bind("<Return>", lambda e: self._execute_command_from_entry())
+
+        self.run_btn = tk.Button(
+            row2,
+            text="▶  Execute",
+            font=("Helvetica", 11, "bold"),
+            bg=self.accent_blue,
+            fg="#11111b",
+            activebackground="#b4befe",
+            relief=tk.FLAT,
+            command=self._execute_command_from_entry,
+            padx=16,
+            pady=4,
+            cursor="pointinghand"
+        )
+        self.run_btn.pack(side=tk.RIGHT)
+
+    # ── Quick Actions Card ───────────────────────────────────────────
+
+    def _build_quick_actions_card(self, parent):
+        card = tk.LabelFrame(
+            parent,
+            text="  🎯 1-Click Direct Workflows  ",
+            font=("Helvetica", 11, "bold"),
+            fg=self.accent_purple,
+            bg=self.panel_bg,
+            padx=10,
+            pady=8
+        )
+        card.pack(fill=tk.X, pady=(0, 10))
+
+        btn_grid = tk.Frame(card, bg=self.panel_bg)
+        btn_grid.pack(fill=tk.X)
+
+        # Row 1 of macros
+        b1 = tk.Button(
+            btn_grid,
+            text="🧮 Open Calculator",
+            font=("Helvetica", 10),
             bg=self.card_bg,
             fg=self.text_light,
-            selectbackground=self.accent_blue,
-            selectforeground="#11111b",
-            font=("Helvetica", 11),
-            height=4,
             relief=tk.FLAT,
-            highlightthickness=0
-        )
-        self.device_listbox.pack(fill=tk.X, pady=(4, 8))
-        self.device_listbox.bind("<<ListboxSelect>>", self._on_device_selected)
-
-        btn_row = tk.Frame(card, bg=self.panel_bg)
-        btn_row.pack(fill=tk.X)
-
-        refresh_btn = tk.Button(
-            btn_row,
-            text="🔄 Refresh Devices",
-            font=("Helvetica", 10, "bold"),
-            bg="#45475a",
-            fg="#ffffff",
-            activebackground="#585b70",
-            relief=tk.FLAT,
-            command=self._refresh_device_list,
+            command=lambda: self._run_custom_command("open Calculator"),
             cursor="pointinghand"
         )
-        refresh_btn.pack(side=tk.LEFT)
+        b1.grid(row=0, column=0, sticky="ew", padx=4, pady=3)
 
-        self.device_count_lbl = tk.Label(
-            btn_row,
-            text="0 devices",
+        b2 = tk.Button(
+            btn_grid,
+            text="📝 Open TextEdit & Type",
             font=("Helvetica", 10),
-            fg=self.text_dim,
-            bg=self.panel_bg
+            bg=self.card_bg,
+            fg=self.text_light,
+            relief=tk.FLAT,
+            command=self._macro_textedit_hello,
+            cursor="pointinghand"
         )
-        self.device_count_lbl.pack(side=tk.RIGHT)
+        b2.grid(row=0, column=1, sticky="ew", padx=4, pady=3)
 
-    def _build_safety_card(self, parent):
+        b3 = tk.Button(
+            btn_grid,
+            text="🌐 Open Google in Browser",
+            font=("Helvetica", 10),
+            bg=self.card_bg,
+            fg=self.text_light,
+            relief=tk.FLAT,
+            command=lambda: self._run_custom_command("open https://google.com"),
+            cursor="pointinghand"
+        )
+        b3.grid(row=0, column=2, sticky="ew", padx=4, pady=3)
+
+        # Row 2 of macros
+        b4 = tk.Button(
+            btn_grid,
+            text="📱 Wakeup Tablet",
+            font=("Helvetica", 10),
+            bg=self.card_bg,
+            fg=self.text_light,
+            relief=tk.FLAT,
+            command=lambda: self._run_custom_command("press wakeup", override_device="android-primary"),
+            cursor="pointinghand"
+        )
+        b4.grid(row=1, column=0, sticky="ew", padx=4, pady=3)
+
+        b5 = tk.Button(
+            btn_grid,
+            text="📱 Tablet Home Screen",
+            font=("Helvetica", 10),
+            bg=self.card_bg,
+            fg=self.text_light,
+            relief=tk.FLAT,
+            command=lambda: self._run_custom_command("press home", override_device="android-primary"),
+            cursor="pointinghand"
+        )
+        b5.grid(row=1, column=1, sticky="ew", padx=4, pady=3)
+
+        b6 = tk.Button(
+            btn_grid,
+            text="📸 Capture Screen",
+            font=("Helvetica", 10),
+            bg=self.card_bg,
+            fg=self.text_light,
+            relief=tk.FLAT,
+            command=self._capture_preview,
+            cursor="pointinghand"
+        )
+        b6.grid(row=1, column=2, sticky="ew", padx=4, pady=3)
+
+        btn_grid.columnconfigure(0, weight=1)
+        btn_grid.columnconfigure(1, weight=1)
+        btn_grid.columnconfigure(2, weight=1)
+
+    # ── Console Output Card ──────────────────────────────────────────
+
+    def _build_console_card(self, parent):
         card = tk.LabelFrame(
             parent,
-            text="  🛡️ Safety Guardrails & Kill-Switch  ",
+            text="  📟 Execution Console & Log  ",
             font=("Helvetica", 11, "bold"),
             fg=self.accent_blue,
             bg=self.panel_bg,
-            padx=12,
-            pady=10
+            padx=10,
+            pady=8
         )
-        card.pack(fill=tk.X, pady=(0, 12))
+        card.pack(fill=tk.BOTH, expand=True)
 
-        self.safety_status_lbl = tk.Label(
+        self.console_text = tk.Text(
             card,
-            text="Policy: Strict Mode (Destructive actions blocked)",
-            font=("Helvetica", 10),
-            fg=self.accent_green,
-            bg=self.panel_bg
-        )
-        self.safety_status_lbl.pack(anchor="w", pady=(0, 8))
-
-        # Emergency Stop / Resume Button
-        self.emergency_btn = tk.Button(
-            card,
-            text="🛑  ENGAGE EMERGENCY STOP",
-            font=("Helvetica", 11, "bold"),
-            bg="#f38ba8",
-            fg="#11111b",
-            activebackground="#eba0ac",
+            bg="#11111b",
+            fg="#a6adc8",
+            insertbackground="#ffffff",
+            font=("Menlo", 10),
             relief=tk.FLAT,
-            command=self._toggle_emergency_stop,
-            pady=6,
-            cursor="pointinghand"
+            highlightthickness=0,
+            wrap=tk.WORD,
+            padx=8,
+            pady=8
         )
-        self.emergency_btn.pack(fill=tk.X, pady=(0, 8))
+        self.console_text.pack(fill=tk.BOTH, expand=True)
 
-        log_btn = tk.Button(
-            card,
-            text="📄 View Security Audit Log",
-            font=("Helvetica", 10),
-            bg="#45475a",
-            fg="#ffffff",
-            activebackground="#585b70",
-            relief=tk.FLAT,
-            command=self._open_audit_log,
-            cursor="pointinghand"
-        )
-        log_btn.pack(fill=tk.X)
+        # Tags for colored console text
+        self.console_text.tag_configure("cmd", foreground=self.accent_blue, font=("Menlo", 10, "bold"))
+        self.console_text.tag_configure("success", foreground=self.accent_green)
+        self.console_text.tag_configure("error", foreground=self.accent_red, font=("Menlo", 10, "bold"))
+        self.console_text.tag_configure("info", foreground="#f5c2e7")
 
-    def _build_ai_config_card(self, parent):
-        card = tk.LabelFrame(
-            parent,
-            text="  🤖 Connect to AI Clients  ",
-            font=("Helvetica", 11, "bold"),
-            fg=self.accent_blue,
-            bg=self.panel_bg,
-            padx=12,
-            pady=10
-        )
-        card.pack(fill=tk.X)
+        self._log("System initialized. Native daemon and hardware adapters ready.", tag="success")
+        self._log("Type any command above or click a workflow button to test!", tag="info")
 
-        desc_lbl = tk.Label(
-            card,
-            text="Copy turnkey JSON configurations into your AI host:",
-            font=("Helvetica", 10),
-            fg=self.text_dim,
-            bg=self.panel_bg
-        )
-        desc_lbl.pack(anchor="w", pady=(0, 8))
-
-        claude_btn = tk.Button(
-            card,
-            text="📋 Copy Claude Desktop Config",
-            font=("Helvetica", 10, "bold"),
-            bg="#313244",
-            fg=self.accent_blue,
-            activebackground="#45475a",
-            relief=tk.FLAT,
-            command=self._copy_claude_config,
-            pady=5,
-            cursor="pointinghand"
-        )
-        claude_btn.pack(fill=tk.X, pady=(0, 6))
-
-        cursor_btn = tk.Button(
-            card,
-            text="📋 Copy Cursor IDE Config",
-            font=("Helvetica", 10, "bold"),
-            bg="#313244",
-            fg=self.accent_blue,
-            activebackground="#45475a",
-            relief=tk.FLAT,
-            command=self._copy_cursor_config,
-            pady=5,
-            cursor="pointinghand"
-        )
-        cursor_btn.pack(fill=tk.X)
+    # ── Right Column: Preview, Devices, Safety ───────────────────────
 
     def _build_preview_card(self, parent):
         card = tk.LabelFrame(
@@ -299,32 +355,20 @@ class ComputerUseApp(tk.Tk):
             font=("Helvetica", 11, "bold"),
             fg=self.accent_blue,
             bg=self.panel_bg,
-            padx=12,
-            pady=10
+            padx=10,
+            pady=8
         )
-        card.pack(fill=tk.BOTH, expand=True, pady=(0, 12))
+        card.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
-        controls_row = tk.Frame(card, bg=self.panel_bg)
-        controls_row.pack(fill=tk.X, pady=(0, 8))
-
-        tk.Label(controls_row, text="Target Device:", font=("Helvetica", 10), bg=self.panel_bg).pack(side=tk.LEFT, padx=(0, 6))
-
-        self.preview_device_var = tk.StringVar(value="mac-primary")
-        self.preview_device_cb = ttk.Combobox(
-            controls_row,
-            textvariable=self.preview_device_var,
-            state="readonly",
-            width=22
-        )
-        self.preview_device_cb.pack(side=tk.LEFT, padx=(0, 10))
+        top_row = tk.Frame(card, bg=self.panel_bg)
+        top_row.pack(fill=tk.X, pady=(0, 6))
 
         snap_btn = tk.Button(
-            controls_row,
-            text="📷 Capture Screenshot",
+            top_row,
+            text="🔄 Refresh Screen",
             font=("Helvetica", 10, "bold"),
-            bg=self.accent_blue,
-            fg="#11111b",
-            activebackground="#b4befe",
+            bg="#45475a",
+            fg="#ffffff",
             relief=tk.FLAT,
             command=self._capture_preview,
             cursor="pointinghand"
@@ -332,7 +376,7 @@ class ComputerUseApp(tk.Tk):
         snap_btn.pack(side=tk.LEFT)
 
         self.preview_meta_lbl = tk.Label(
-            controls_row,
+            top_row,
             text="",
             font=("Helvetica", 9),
             fg=self.text_dim,
@@ -340,7 +384,6 @@ class ComputerUseApp(tk.Tk):
         )
         self.preview_meta_lbl.pack(side=tk.RIGHT)
 
-        # Canvas for image preview
         self.preview_canvas = tk.Canvas(
             card,
             bg="#11111b",
@@ -350,44 +393,263 @@ class ComputerUseApp(tk.Tk):
         )
         self.preview_canvas.pack(fill=tk.BOTH, expand=True)
 
-    def _build_diagnostics_card(self, parent):
+    def _build_devices_card(self, parent):
         card = tk.LabelFrame(
             parent,
-            text="  🧪 Health & Integration Diagnostics  ",
+            text="  📱 Connected Devices  ",
             font=("Helvetica", 11, "bold"),
             fg=self.accent_blue,
             bg=self.panel_bg,
-            padx=12,
-            pady=10
+            padx=10,
+            pady=8
         )
-        card.pack(fill=tk.X)
+        card.pack(fill=tk.X, pady=(0, 10))
 
-        test_row = tk.Frame(card, bg=self.panel_bg)
-        test_row.pack(fill=tk.X)
-
-        self.run_test_btn = tk.Button(
-            test_row,
-            text="⚡ Run Master Integration Test",
-            font=("Helvetica", 10, "bold"),
-            bg="#a6e3a1",
-            fg="#11111b",
-            activebackground="#94e2d5",
+        self.device_listbox = tk.Listbox(
+            card,
+            bg=self.card_bg,
+            fg=self.text_light,
+            selectbackground=self.accent_blue,
+            selectforeground="#11111b",
+            font=("Helvetica", 10),
+            height=3,
             relief=tk.FLAT,
-            command=self._run_integration_tests,
+            highlightthickness=0
+        )
+        self.device_listbox.pack(fill=tk.X, pady=(2, 6))
+
+        d_row = tk.Frame(card, bg=self.panel_bg)
+        d_row.pack(fill=tk.X)
+
+        refresh_btn = tk.Button(
+            d_row,
+            text="🔄 Scan Devices",
+            font=("Helvetica", 9),
+            bg="#45475a",
+            fg="#ffffff",
+            relief=tk.FLAT,
+            command=self._refresh_device_list,
             cursor="pointinghand"
         )
-        self.run_test_btn.pack(side=tk.LEFT)
+        refresh_btn.pack(side=tk.LEFT)
 
-        self.test_status_lbl = tk.Label(
-            test_row,
-            text="Ready to verify all devices",
-            font=("Helvetica", 10),
+        self.device_count_lbl = tk.Label(
+            d_row,
+            text="0 devices",
+            font=("Helvetica", 9),
             fg=self.text_dim,
             bg=self.panel_bg
         )
-        self.test_status_lbl.pack(side=tk.LEFT, padx=(12, 0))
+        self.device_count_lbl.pack(side=tk.RIGHT)
 
-    # ── Logic & Event Handlers ───────────────────────────────────────
+    def _build_safety_card(self, parent):
+        card = tk.LabelFrame(
+            parent,
+            text="  🛡️ Emergency Kill-Switch  ",
+            font=("Helvetica", 11, "bold"),
+            fg=self.accent_blue,
+            bg=self.panel_bg,
+            padx=10,
+            pady=8
+        )
+        card.pack(fill=tk.X)
+
+        self.emergency_btn = tk.Button(
+            card,
+            text="🛑  ENGAGE EMERGENCY STOP",
+            font=("Helvetica", 10, "bold"),
+            bg="#f38ba8",
+            fg="#11111b",
+            activebackground="#eba0ac",
+            relief=tk.FLAT,
+            command=self._toggle_emergency_stop,
+            pady=5,
+            cursor="pointinghand"
+        )
+        self.emergency_btn.pack(fill=tk.X)
+
+    # ── Console Logger ───────────────────────────────────────────────
+
+    def _log(self, message: str, tag: str = None):
+        t_str = time.strftime("[%H:%M:%S] ")
+        self.console_text.insert(tk.END, t_str)
+        if tag:
+            self.console_text.insert(tk.END, message + "\n", tag)
+        else:
+            self.console_text.insert(tk.END, message + "\n")
+        self.console_text.see(tk.END)
+
+    # ── Command Execution Logic ──────────────────────────────────────
+
+    def _execute_command_from_entry(self):
+        cmd = self.cmd_entry.get().strip()
+        if not cmd:
+            return
+        self.cmd_entry.delete(0, tk.END)
+        self._run_custom_command(cmd)
+
+    def _run_custom_command(self, cmd_text: str, override_device: str = None):
+        if self._is_executing_command:
+            self._log("⚠️ Another command is currently executing, please wait...", tag="error")
+            return
+
+        target_dev = override_device or self.cmd_device_var.get()
+        self._log(f"> {cmd_text}  (on {target_dev})", tag="cmd")
+
+        self._is_executing_command = True
+        self.run_btn.config(state=tk.DISABLED, text="Running...")
+
+        def _worker():
+            try:
+                success, msg = self._parse_and_run(cmd_text, target_dev)
+                if success:
+                    self.after(0, lambda: self._log(f"✅ {msg}", tag="success"))
+                else:
+                    self.after(0, lambda: self._log(f"❌ {msg}", tag="error"))
+            except Exception as e:
+                self.after(0, lambda: self._log(f"❌ Error: {str(e)}", tag="error"))
+            finally:
+                self.after(0, self._finish_command_execution)
+                # Auto refresh preview after command completes
+                time.sleep(0.3)
+                self.after(0, self._capture_preview)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _finish_command_execution(self):
+        self._is_executing_command = False
+        self.run_btn.config(state=tk.NORMAL, text="▶  Execute")
+
+    def _parse_and_run(self, cmd: str, dev_id: str) -> (bool, str):
+        """
+        Parses human-friendly commands and maps them directly to ToolRouter actions.
+        Supported commands:
+          open <app> / launch <app>
+          open <url> (e.g. open https://...)
+          type <text>
+          click <x> <y>
+          click "<label>" (semantic click)
+          press <key> [modifiers]
+          scroll [up/down] [amount]
+          screenshot
+          tree
+        """
+        parts = cmd.strip().split()
+        if not parts:
+            return True, "Empty command"
+
+        verb = parts[0].lower()
+        rest = cmd[len(parts[0]):].strip()
+
+        # 1. Open URL
+        if verb in ("open", "launch", "goto") and (rest.startswith("http://") or rest.startswith("https://") or rest.startswith("www.")):
+            url = rest if rest.startswith("http") else f"https://{rest}"
+            res = self.router.open_url(dev_id, url)
+            return True, f"Opened URL: {url}"
+
+        # 2. Open Application
+        if verb in ("open", "launch", "app"):
+            app_name = rest
+            if not app_name:
+                return False, "Usage: open <Application Name>"
+            res = self.router.open_app(dev_id, app_name)
+            return True, f"Launched '{app_name}' on {dev_id}"
+
+        # 3. Type Text
+        if verb in ("type", "write", "input"):
+            text = rest
+            if not text:
+                return False, "Usage: type <text to type>"
+            res = self.router.type_text(dev_id, text)
+            if res.success:
+                return True, f"Typed text: '{text}'"
+            return False, f"Failed to type: {res.error}"
+
+        # 4. Press Key / Shortcut
+        if verb in ("press", "key", "shortcut"):
+            # Syntax: press enter, press cmd+c, press home, press space
+            tokens = rest.split("+")
+            if len(tokens) == 1:
+                key = tokens[0].strip()
+                res = self.router.press_key(dev_id, key=key)
+            else:
+                key = tokens[-1].strip()
+                modifiers = [t.strip() for t in tokens[:-1]]
+                res = self.router.press_key(dev_id, key=key, modifiers=modifiers)
+
+            if res.success:
+                return True, f"Pressed key '{rest}'"
+            return False, f"Keypress failed: {res.error}"
+
+        # 5. Click
+        if verb in ("click", "tap"):
+            # Check if coordinates: click 500 300
+            coord_match = re.match(r"^(\d+)\s+(\d+)$", rest)
+            if coord_match:
+                x = int(coord_match.group(1))
+                y = int(coord_match.group(2))
+                res = self.router.click(dev_id, x=x, y=y)
+                if res.success:
+                    return True, f"Clicked at ({x}, {y})"
+                return False, f"Click failed: {res.error}"
+
+            # Check if semantic element click: click "Submit" or click Submit
+            label = rest.strip('"\'')
+            if label:
+                res = self.router.click_ui_element(dev_id, query=label)
+                if res.success:
+                    return True, f"Clicked UI element matching '{label}'"
+                return False, f"Element click failed: {res.error}"
+
+            return False, "Usage: click <x> <y>  OR  click '<element label>'"
+
+        # 6. Scroll
+        if verb in ("scroll", "swipe"):
+            direction = rest.lower().strip()
+            delta_y = -100  # scroll down by default
+            if "up" in direction:
+                delta_y = 100
+            elif "down" in direction:
+                delta_y = -100
+
+            res = self.router.scroll(dev_id, delta_y=delta_y)
+            if res.success:
+                return True, f"Scrolled {direction or 'down'}"
+            return False, f"Scroll failed: {res.error}"
+
+        # 7. Screenshot
+        if verb in ("screenshot", "snap", "capture"):
+            shot = self.router.screenshot(dev_id, scale=0.5)
+            return True, f"Captured screen: {shot.width}x{shot.height}"
+
+        # 8. UI Tree Inspection
+        if verb in ("tree", "ui", "inspect"):
+            tree = self.router.get_ui_tree(dev_id, max_depth=3)
+            return True, f"Inspected UI tree for app: '{tree.get('app_name', 'Unknown')}'"
+
+        return False, f"Unknown command: '{cmd}'. Try: open, type, press, click, scroll, screenshot"
+
+    # ── Macros ───────────────────────────────────────────────────────
+
+    def _macro_textedit_hello(self):
+        """Macro that opens TextEdit, waits for launch, and types a welcome message."""
+        def _flow():
+            self._log("Executing macro: Open TextEdit & Type Message...", tag="cmd")
+            self.router.open_app("mac-primary", "TextEdit")
+            time.sleep(1.2)
+            # Create a new document with Cmd+N
+            self.router.press_key("mac-primary", key="n", modifiers=["cmd"])
+            time.sleep(0.5)
+            # Type message
+            msg = "Hello! The Computer Use Engine is fully working on your Mac without AI."
+            self.router.type_text("mac-primary", text=msg)
+            self._log("✅ TextEdit opened and message typed successfully!", tag="success")
+            time.sleep(0.3)
+            self.after(0, self._capture_preview)
+
+        threading.Thread(target=_flow, daemon=True).start()
+
+    # ── Device & Preview Management ──────────────────────────────────
 
     def _refresh_device_list(self):
         self.registry.discover_devices()
@@ -403,26 +665,19 @@ class ComputerUseApp(tk.Tk):
             device_ids.append(d.id)
 
         self.device_count_lbl.config(text=f"{len(devices)} device(s) online")
-        self.preview_device_cb["values"] = device_ids
-        if device_ids and self.preview_device_var.get() not in device_ids:
-            self.preview_device_var.set(device_ids[0])
+        self.cmd_device_cb["values"] = device_ids
+        if device_ids and self.cmd_device_var.get() not in device_ids:
+            self.cmd_device_var.set(device_ids[0])
 
-    def _on_device_selected(self, event):
-        selection = self.device_listbox.curselection()
-        if selection:
-            devices = self.registry.list_devices()
-            if selection[0] < len(devices):
-                dev = devices[selection[0]]
-                self.preview_device_var.set(dev.id)
+    def _on_cmd_device_change(self, event):
+        self._capture_preview()
 
     def _capture_preview(self):
-        dev_id = self.preview_device_var.get()
+        dev_id = self.cmd_device_var.get()
         if not dev_id:
-            messagebox.showwarning("No Device", "Please select a device first.")
             return
 
         self.preview_meta_lbl.config(text="Capturing...")
-        self.update()
 
         def _worker():
             t0 = time.time()
@@ -433,21 +688,20 @@ class ComputerUseApp(tk.Tk):
                 raw_bytes = base64.b64decode(shot.image_base64)
                 img = Image.open(io.BytesIO(raw_bytes))
 
-                # Scale to fit canvas
-                canvas_w = self.preview_canvas.winfo_width() or 480
-                canvas_h = self.preview_canvas.winfo_height() or 320
+                canvas_w = self.preview_canvas.winfo_width() or 400
+                canvas_h = self.preview_canvas.winfo_height() or 260
 
-                img.thumbnail((canvas_w - 20, canvas_h - 20), Image.Resampling.LANCZOS)
+                img.thumbnail((canvas_w - 10, canvas_h - 10), Image.Resampling.LANCZOS)
                 tk_img = ImageTk.PhotoImage(img)
 
                 self.after(0, lambda: self._display_preview(tk_img, shot.width, shot.height, dt))
             except Exception as e:
-                self.after(0, lambda: self.preview_meta_lbl.config(text=f"Error: {str(e)[:35]}"))
+                self.after(0, lambda: self.preview_meta_lbl.config(text=f"Error: {str(e)[:30]}"))
 
         threading.Thread(target=_worker, daemon=True).start()
 
     def _display_preview(self, tk_img, orig_w, orig_h, latency_ms):
-        self._preview_image = tk_img  # Keep reference
+        self._preview_image = tk_img
         self.preview_canvas.delete("all")
         canvas_w = self.preview_canvas.winfo_width()
         canvas_h = self.preview_canvas.winfo_height()
@@ -462,11 +716,9 @@ class ComputerUseApp(tk.Tk):
 
     def _toggle_emergency_stop(self):
         if self.guardrails.is_emergency_stopped():
-            # Resume
             self.guardrails.set_emergency_stop(False)
-            messagebox.showinfo("Control Resumed", "Emergency stop has been lifted. Normal operation resumed.")
+            messagebox.showinfo("Control Resumed", "Emergency stop lifted. Normal operation resumed.")
         else:
-            # Engage Stop
             self.guardrails.set_emergency_stop(True)
             messagebox.showwarning("EMERGENCY STOP", "Emergency stop ENGAGED! All tool operations are now frozen.")
 
@@ -484,13 +736,9 @@ class ComputerUseApp(tk.Tk):
                 bg=self.accent_green,
                 fg="#11111b"
             )
-            self.safety_status_lbl.config(
-                text="STATUS: ALL ACTIONS BLOCKED (Kill-Switch Active)",
-                fg=self.accent_red
-            )
         else:
             self.status_badge.config(
-                text="● SYSTEM ACTIVE",
+                text="● ENGINE ACTIVE",
                 fg=self.accent_green,
                 bg="#181825"
             )
@@ -499,91 +747,8 @@ class ComputerUseApp(tk.Tk):
                 bg=self.accent_red,
                 fg="#11111b"
             )
-            self.safety_status_lbl.config(
-                text="Policy: Strict Mode (Destructive actions blocked)",
-                fg=self.accent_green
-            )
-
-    def _open_audit_log(self):
-        log_path = os.path.expanduser("~/.computer-use-tool/audit.log")
-        if not os.path.exists(log_path):
-            messagebox.showinfo("Audit Log", "No audit log records recorded yet.")
-            return
-
-        # Open in default macOS application
-        subprocess.run(["open", log_path])
-
-    def _copy_claude_config(self):
-        cfg_path = os.path.join(SCRIPT_DIR, "config", "claude_desktop_config.json")
-        try:
-            with open(cfg_path, "r") as f:
-                content = f.read()
-            self.clipboard_clear()
-            self.clipboard_append(content)
-            messagebox.showinfo(
-                "Copied to Clipboard!",
-                "Claude Desktop configuration JSON copied to clipboard!\n\n"
-                "Paste it into:\n"
-                "~/Library/Application Support/Claude/claude_desktop_config.json"
-            )
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to read config: {e}")
-
-    def _copy_cursor_config(self):
-        cfg_path = os.path.join(SCRIPT_DIR, "config", "cursor_mcp.json")
-        try:
-            with open(cfg_path, "r") as f:
-                content = f.read()
-            self.clipboard_clear()
-            self.clipboard_append(content)
-            messagebox.showinfo(
-                "Copied to Clipboard!",
-                "Cursor MCP configuration JSON copied to clipboard!\n\n"
-                "Add it in Cursor Settings → Features → MCP Servers."
-            )
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to read config: {e}")
-
-    def _run_integration_tests(self):
-        if self._is_testing:
-            return
-
-        self._is_testing = True
-        self.run_test_btn.config(state=tk.DISABLED, text="Testing in progress...")
-        self.test_status_lbl.config(text="Running Master Test Suite across all devices...", fg=self.accent_amber)
-
-        def _test_worker():
-            try:
-                env = os.environ.copy()
-                env["PYTHONPATH"] = SCRIPT_DIR
-                res = subprocess.run(
-                    [sys.executable, os.path.join(SCRIPT_DIR, "tests", "test_master_integration.py")],
-                    capture_output=True,
-                    text=True,
-                    env=env,
-                    timeout=90
-                )
-                success = (res.returncode == 0)
-                output = res.stdout if success else (res.stderr or res.stdout)
-                self.after(0, lambda: self._on_test_finished(success, output))
-            except Exception as e:
-                self.after(0, lambda: self._on_test_finished(False, str(e)))
-
-        threading.Thread(target=_test_worker, daemon=True).start()
-
-    def _on_test_finished(self, success: bool, output: str):
-        self._is_testing = False
-        self.run_test_btn.config(state=tk.NORMAL, text="⚡ Run Master Integration Test")
-
-        if success:
-            self.test_status_lbl.config(text="✅ All Tests Passed! 0 Bugs Detected.", fg=self.accent_green)
-            messagebox.showinfo("Test Suite Passed", "🎉 Master Integration Suite Passed with 100% success!\nAll devices and tools are fully operational.")
-        else:
-            self.test_status_lbl.config(text="❌ Test Failure Detected", fg=self.accent_red)
-            messagebox.showerror("Test Failed", f"Master Test encountered an error:\n\n{output[:300]}")
 
     def _auto_poll(self):
-        """Periodic background status refresher."""
         self._update_safety_indicator()
         self.after(5000, self._auto_poll)
 
