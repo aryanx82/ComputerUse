@@ -1,7 +1,7 @@
 """
-computerUse Desktop Application — GUI Control Center with Direct Command Runner
-Allows direct, AI-free control of Mac and Android devices through natural commands,
-quick macros, visual screen previews, and safety controls.
+computerUse Desktop Application — Autonomous Chatbot Assistant
+A modern chatbot interface for controlling Mac and Android devices using natural language,
+powered by Groq AI (Llama 3.3 70B) with tool-calling and local direct execution fallback.
 """
 
 import sys
@@ -10,8 +10,6 @@ import time
 import json
 import base64
 import io
-import re
-import shlex
 import threading
 import subprocess
 import tkinter as tk
@@ -24,22 +22,36 @@ if SCRIPT_DIR not in sys.path:
 
 from src.registry import DeviceRegistry
 from src.router import ToolRouter
-from src.safety.guardrails import guardrails, SafetyGuardrails
+from src.safety.guardrails import guardrails
+from src.agent.groq_agent import GroqAgent
 
 
-class ComputerUseApp(tk.Tk):
+class ChatbotApp(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        self.title("computerUse — Cross-Device Control Center")
-        self.geometry("1060x800")
-        self.minsize(940, 720)
+        self.title("computerUse — AI Chatbot Assistant")
+        self.geometry("620x820")
+        self.minsize(520, 680)
 
-        # Apply dark theme styling
-        self.configure(bg="#181825")
-        self._setup_styles()
+        # Dark theme base
+        self.bg_main = "#11111b"
+        self.bg_header = "#181825"
+        self.bg_chat = "#181825"
+        self.bg_card = "#1e1e2e"
+        self.bg_user_bubble = "#3b82f6"
+        self.bg_ai_bubble = "#252538"
+        self.bg_tool_pill = "#313244"
+        self.text_light = "#f8fafc"
+        self.text_dim = "#94a3b8"
+        self.accent_blue = "#89b4fa"
+        self.accent_green = "#a6e3a1"
+        self.accent_red = "#f38ba8"
+        self.accent_purple = "#cba6f7"
 
-        # Lift window to front
+        self.configure(bg=self.bg_main)
+
+        # Lift window to front on launch
         self.lift()
         self.attributes('-topmost', True)
         self.after_idle(self.attributes, '-topmost', False)
@@ -49,710 +61,522 @@ class ComputerUseApp(tk.Tk):
         self.registry = DeviceRegistry()
         self.router = ToolRouter(self.registry)
         self.guardrails = guardrails
+        self.agent = GroqAgent(self.router, self.registry)
 
-        self._preview_image = None
-        self._is_testing = False
-        self._is_executing_command = False
+        self._is_busy = False
+        self._preview_refs = []  # Retain photo images to avoid GC
 
         self._build_ui()
-        self._refresh_device_list()
-        self._update_safety_indicator()
+        self._refresh_devices()
+        self._send_welcome_message()
 
-        # Schedule periodic status check (every 5 seconds)
-        self.after(5000, self._auto_poll)
-
-    def _setup_styles(self):
-        self.style = ttk.Style(self)
-        try:
-            self.style.theme_use("clam")
-        except Exception:
-            pass
-
-        # Colors (Catppuccin Macchiato palette)
-        self.bg_dark = "#181825"
-        self.panel_bg = "#1e1e2e"
-        self.card_bg = "#313244"
-        self.text_light = "#cdd6f4"
-        self.text_dim = "#a6adc8"
-        self.accent_blue = "#89b4fa"
-        self.accent_green = "#a6e3a1"
-        self.accent_red = "#f38ba8"
-        self.accent_amber = "#f9e2af"
-        self.accent_purple = "#cba6f7"
-
-        self.style.configure(".", background=self.panel_bg, foreground=self.text_light, font=("Helvetica", 11))
-        self.style.configure("TLabel", background=self.panel_bg, foreground=self.text_light)
-        self.style.configure("Card.TFrame", background=self.panel_bg)
+    # ── UI Construction ──────────────────────────────────────────────
 
     def _build_ui(self):
-        # ── Top App Bar ──────────────────────────────────────────────
-        top_bar = tk.Frame(self, bg="#11111b", height=65, padx=20, pady=10)
-        top_bar.pack(fill=tk.X)
+        # ── 1. Top Header Bar ────────────────────────────────────────
+        header = tk.Frame(self, bg=self.bg_header, height=65, padx=16, pady=10)
+        header.pack(fill=tk.X)
 
-        title_frame = tk.Frame(top_bar, bg="#11111b")
-        title_frame.pack(side=tk.LEFT, fill=tk.Y)
+        title_box = tk.Frame(header, bg=self.bg_header)
+        title_box.pack(side=tk.LEFT, fill=tk.Y)
 
         title_lbl = tk.Label(
-            title_frame,
-            text="🖥️  computerUse",
-            font=("Helvetica", 18, "bold"),
-            fg="#cdd6f4",
-            bg="#11111b"
+            title_box,
+            text="🤖 computerUse",
+            font=("Helvetica", 17, "bold"),
+            fg=self.text_light,
+            bg=self.bg_header
         )
         title_lbl.pack(anchor="w")
 
-        subtitle_lbl = tk.Label(
-            title_frame,
-            text="Direct Command & Hardware Control Center (Mac & Android)",
-            font=("Helvetica", 10),
-            fg="#a6adc8",
-            bg="#11111b"
-        )
-        subtitle_lbl.pack(anchor="w")
-
-        # Daemon Status Badge
-        self.status_badge = tk.Label(
-            top_bar,
-            text="● ENGINE ACTIVE",
-            font=("Helvetica", 11, "bold"),
+        self.status_sub_lbl = tk.Label(
+            title_box,
+            text="● Online • Ready to control Mac & Android",
+            font=("Helvetica", 9),
             fg=self.accent_green,
-            bg="#181825",
-            padx=14,
-            pady=6,
-            relief=tk.FLAT
+            bg=self.bg_header
         )
-        self.status_badge.pack(side=tk.RIGHT, pady=6)
+        self.status_sub_lbl.pack(anchor="w")
 
-        # ── Main Content Area ────────────────────────────────────────
-        main_frame = tk.Frame(self, bg=self.bg_dark, padx=14, pady=12)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # Header Right Action Buttons
+        btn_box = tk.Frame(header, bg=self.bg_header)
+        btn_box.pack(side=tk.RIGHT, fill=tk.Y, pady=2)
 
-        # Left Column (Command Bar, Quick Actions, Console)
-        left_col = tk.Frame(main_frame, bg=self.bg_dark, width=540)
-        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
-
-        # Right Column (Screen preview, Devices, Safety)
-        right_col = tk.Frame(main_frame, bg=self.bg_dark, width=440)
-        right_col.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-
-        self._build_command_card(left_col)
-        self._build_quick_actions_card(left_col)
-        self._build_console_card(left_col)
-
-        self._build_preview_card(right_col)
-        self._build_devices_card(right_col)
-        self._build_safety_card(right_col)
-
-    # ── Command Bar Card ─────────────────────────────────────────────
-
-    def _build_command_card(self, parent):
-        card = tk.LabelFrame(
-            parent,
-            text="  ⚡ Direct Command Runner (No AI Needed)  ",
-            font=("Helvetica", 11, "bold"),
-            fg=self.accent_blue,
-            bg=self.panel_bg,
-            padx=12,
-            pady=10
-        )
-        card.pack(fill=tk.X, pady=(0, 10))
-
-        row1 = tk.Frame(card, bg=self.panel_bg)
-        row1.pack(fill=tk.X, pady=(0, 8))
-
-        tk.Label(row1, text="Target Device:", font=("Helvetica", 10, "bold"), bg=self.panel_bg).pack(side=tk.LEFT, padx=(0, 6))
-
-        self.cmd_device_var = tk.StringVar(value="mac-primary")
-        self.cmd_device_cb = ttk.Combobox(
-            row1,
-            textvariable=self.cmd_device_var,
+        # Target Device Selector
+        self.device_var = tk.StringVar(value="mac-primary")
+        self.device_cb = ttk.Combobox(
+            btn_box,
+            textvariable=self.device_var,
             state="readonly",
-            width=22
+            width=16,
+            font=("Helvetica", 10)
         )
-        self.cmd_device_cb.pack(side=tk.LEFT, padx=(0, 10))
-        self.cmd_device_cb.bind("<<ComboboxSelected>>", self._on_cmd_device_change)
+        self.device_cb.pack(side=tk.LEFT, padx=(0, 6), ipady=2)
 
-        help_lbl = tk.Label(
-            row1,
-            text="Commands: open, type, click, press, url, scroll",
-            font=("Helvetica", 9),
-            fg=self.text_dim,
-            bg=self.panel_bg
-        )
-        help_lbl.pack(side=tk.RIGHT)
-
-        # Input Entry + Run Button
-        row2 = tk.Frame(card, bg=self.panel_bg)
-        row2.pack(fill=tk.X)
-
-        self.cmd_entry = tk.Entry(
-            row2,
-            font=("Menlo", 12),
-            bg=self.card_bg,
-            fg="#ffffff",
-            insertbackground="#ffffff",
-            relief=tk.FLAT,
-            highlightthickness=1,
-            highlightbackground="#45475a",
-            highlightcolor=self.accent_blue
-        )
-        self.cmd_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8), ipady=6)
-        self.cmd_entry.bind("<Return>", lambda e: self._execute_command_from_entry())
-
-        self.run_btn = tk.Button(
-            row2,
-            text="▶  Execute",
-            font=("Helvetica", 11, "bold"),
-            bg=self.accent_blue,
-            fg="#11111b",
-            activebackground="#b4befe",
-            relief=tk.FLAT,
-            command=self._execute_command_from_entry,
-            padx=16,
-            pady=4,
-            cursor="pointinghand"
-        )
-        self.run_btn.pack(side=tk.RIGHT)
-
-    # ── Quick Actions Card ───────────────────────────────────────────
-
-    def _build_quick_actions_card(self, parent):
-        card = tk.LabelFrame(
-            parent,
-            text="  🎯 1-Click Direct Workflows  ",
-            font=("Helvetica", 11, "bold"),
+        # Groq API Key Config Button
+        key_btn = tk.Button(
+            btn_box,
+            text="🔑 Groq Key",
+            font=("Helvetica", 9, "bold"),
+            bg="#313244",
             fg=self.accent_purple,
-            bg=self.panel_bg,
-            padx=10,
-            pady=8
-        )
-        card.pack(fill=tk.X, pady=(0, 10))
-
-        btn_grid = tk.Frame(card, bg=self.panel_bg)
-        btn_grid.pack(fill=tk.X)
-
-        # Row 1 of macros
-        b1 = tk.Button(
-            btn_grid,
-            text="🧮 Open Calculator",
-            font=("Helvetica", 10),
-            bg=self.card_bg,
-            fg=self.text_light,
+            activebackground="#45475a",
             relief=tk.FLAT,
-            command=lambda: self._run_custom_command("open Calculator"),
-            cursor="pointinghand"
-        )
-        b1.grid(row=0, column=0, sticky="ew", padx=4, pady=3)
-
-        b2 = tk.Button(
-            btn_grid,
-            text="📝 Open TextEdit & Type",
-            font=("Helvetica", 10),
-            bg=self.card_bg,
-            fg=self.text_light,
-            relief=tk.FLAT,
-            command=self._macro_textedit_hello,
-            cursor="pointinghand"
-        )
-        b2.grid(row=0, column=1, sticky="ew", padx=4, pady=3)
-
-        b3 = tk.Button(
-            btn_grid,
-            text="🌐 Open Google in Browser",
-            font=("Helvetica", 10),
-            bg=self.card_bg,
-            fg=self.text_light,
-            relief=tk.FLAT,
-            command=lambda: self._run_custom_command("open https://google.com"),
-            cursor="pointinghand"
-        )
-        b3.grid(row=0, column=2, sticky="ew", padx=4, pady=3)
-
-        # Row 2 of macros
-        b4 = tk.Button(
-            btn_grid,
-            text="📱 Wakeup Tablet",
-            font=("Helvetica", 10),
-            bg=self.card_bg,
-            fg=self.text_light,
-            relief=tk.FLAT,
-            command=lambda: self._run_custom_command("press wakeup", override_device="android-primary"),
-            cursor="pointinghand"
-        )
-        b4.grid(row=1, column=0, sticky="ew", padx=4, pady=3)
-
-        b5 = tk.Button(
-            btn_grid,
-            text="📱 Tablet Home Screen",
-            font=("Helvetica", 10),
-            bg=self.card_bg,
-            fg=self.text_light,
-            relief=tk.FLAT,
-            command=lambda: self._run_custom_command("press home", override_device="android-primary"),
-            cursor="pointinghand"
-        )
-        b5.grid(row=1, column=1, sticky="ew", padx=4, pady=3)
-
-        b6 = tk.Button(
-            btn_grid,
-            text="📸 Capture Screen",
-            font=("Helvetica", 10),
-            bg=self.card_bg,
-            fg=self.text_light,
-            relief=tk.FLAT,
-            command=self._capture_preview,
-            cursor="pointinghand"
-        )
-        b6.grid(row=1, column=2, sticky="ew", padx=4, pady=3)
-
-        btn_grid.columnconfigure(0, weight=1)
-        btn_grid.columnconfigure(1, weight=1)
-        btn_grid.columnconfigure(2, weight=1)
-
-    # ── Console Output Card ──────────────────────────────────────────
-
-    def _build_console_card(self, parent):
-        card = tk.LabelFrame(
-            parent,
-            text="  📟 Execution Console & Log  ",
-            font=("Helvetica", 11, "bold"),
-            fg=self.accent_blue,
-            bg=self.panel_bg,
-            padx=10,
-            pady=8
-        )
-        card.pack(fill=tk.BOTH, expand=True)
-
-        self.console_text = tk.Text(
-            card,
-            bg="#11111b",
-            fg="#a6adc8",
-            insertbackground="#ffffff",
-            font=("Menlo", 10),
-            relief=tk.FLAT,
-            highlightthickness=0,
-            wrap=tk.WORD,
+            command=self._show_api_key_dialog,
             padx=8,
-            pady=8
-        )
-        self.console_text.pack(fill=tk.BOTH, expand=True)
-
-        # Tags for colored console text
-        self.console_text.tag_configure("cmd", foreground=self.accent_blue, font=("Menlo", 10, "bold"))
-        self.console_text.tag_configure("success", foreground=self.accent_green)
-        self.console_text.tag_configure("error", foreground=self.accent_red, font=("Menlo", 10, "bold"))
-        self.console_text.tag_configure("info", foreground="#f5c2e7")
-
-        self._log("System initialized. Native daemon and hardware adapters ready.", tag="success")
-        self._log("Type any command above or click a workflow button to test!", tag="info")
-
-    # ── Right Column: Preview, Devices, Safety ───────────────────────
-
-    def _build_preview_card(self, parent):
-        card = tk.LabelFrame(
-            parent,
-            text="  📸 Live Screen Preview  ",
-            font=("Helvetica", 11, "bold"),
-            fg=self.accent_blue,
-            bg=self.panel_bg,
-            padx=10,
-            pady=8
-        )
-        card.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-
-        top_row = tk.Frame(card, bg=self.panel_bg)
-        top_row.pack(fill=tk.X, pady=(0, 6))
-
-        snap_btn = tk.Button(
-            top_row,
-            text="🔄 Refresh Screen",
-            font=("Helvetica", 10, "bold"),
-            bg="#45475a",
-            fg="#ffffff",
-            relief=tk.FLAT,
-            command=self._capture_preview,
+            pady=3,
             cursor="pointinghand"
         )
-        snap_btn.pack(side=tk.LEFT)
+        key_btn.pack(side=tk.LEFT, padx=(0, 4))
 
-        self.preview_meta_lbl = tk.Label(
-            top_row,
-            text="",
-            font=("Helvetica", 9),
-            fg=self.text_dim,
-            bg=self.panel_bg
-        )
-        self.preview_meta_lbl.pack(side=tk.RIGHT)
-
-        self.preview_canvas = tk.Canvas(
-            card,
-            bg="#11111b",
-            relief=tk.FLAT,
-            highlightthickness=1,
-            highlightbackground="#45475a"
-        )
-        self.preview_canvas.pack(fill=tk.BOTH, expand=True)
-
-    def _build_devices_card(self, parent):
-        card = tk.LabelFrame(
-            parent,
-            text="  📱 Connected Devices  ",
-            font=("Helvetica", 11, "bold"),
-            fg=self.accent_blue,
-            bg=self.panel_bg,
-            padx=10,
-            pady=8
-        )
-        card.pack(fill=tk.X, pady=(0, 10))
-
-        self.device_listbox = tk.Listbox(
-            card,
-            bg=self.card_bg,
-            fg=self.text_light,
-            selectbackground=self.accent_blue,
-            selectforeground="#11111b",
+        # Clear Chat Button
+        clear_btn = tk.Button(
+            btn_box,
+            text="🗑️",
             font=("Helvetica", 10),
-            height=3,
+            bg="#313244",
+            fg=self.text_dim,
+            activebackground="#45475a",
             relief=tk.FLAT,
-            highlightthickness=0
-        )
-        self.device_listbox.pack(fill=tk.X, pady=(2, 6))
-
-        d_row = tk.Frame(card, bg=self.panel_bg)
-        d_row.pack(fill=tk.X)
-
-        refresh_btn = tk.Button(
-            d_row,
-            text="🔄 Scan Devices",
-            font=("Helvetica", 9),
-            bg="#45475a",
-            fg="#ffffff",
-            relief=tk.FLAT,
-            command=self._refresh_device_list,
+            command=self._clear_chat,
+            padx=6,
+            pady=2,
             cursor="pointinghand"
         )
-        refresh_btn.pack(side=tk.LEFT)
+        clear_btn.pack(side=tk.LEFT, padx=(0, 4))
 
-        self.device_count_lbl = tk.Label(
-            d_row,
-            text="0 devices",
-            font=("Helvetica", 9),
-            fg=self.text_dim,
-            bg=self.panel_bg
-        )
-        self.device_count_lbl.pack(side=tk.RIGHT)
-
-    def _build_safety_card(self, parent):
-        card = tk.LabelFrame(
-            parent,
-            text="  🛡️ Emergency Kill-Switch  ",
-            font=("Helvetica", 11, "bold"),
-            fg=self.accent_blue,
-            bg=self.panel_bg,
-            padx=10,
-            pady=8
-        )
-        card.pack(fill=tk.X)
-
-        self.emergency_btn = tk.Button(
-            card,
-            text="🛑  ENGAGE EMERGENCY STOP",
-            font=("Helvetica", 10, "bold"),
+        # Emergency Stop Button
+        self.stop_btn = tk.Button(
+            btn_box,
+            text="🛑 Stop",
+            font=("Helvetica", 9, "bold"),
             bg="#f38ba8",
             fg="#11111b",
             activebackground="#eba0ac",
             relief=tk.FLAT,
             command=self._toggle_emergency_stop,
-            pady=5,
+            padx=8,
+            pady=3,
             cursor="pointinghand"
         )
-        self.emergency_btn.pack(fill=tk.X)
+        self.stop_btn.pack(side=tk.LEFT)
 
-    # ── Console Logger ───────────────────────────────────────────────
+        # ── 2. Chat Conversation Canvas (Scrollable) ─────────────────
+        chat_container = tk.Frame(self, bg=self.bg_chat)
+        chat_container.pack(fill=tk.BOTH, expand=True)
 
-    def _log(self, message: str, tag: str = None):
-        t_str = time.strftime("[%H:%M:%S] ")
-        self.console_text.insert(tk.END, t_str)
-        if tag:
-            self.console_text.insert(tk.END, message + "\n", tag)
-        else:
-            self.console_text.insert(tk.END, message + "\n")
-        self.console_text.see(tk.END)
+        self.canvas = tk.Canvas(
+            chat_container,
+            bg=self.bg_chat,
+            relief=tk.FLAT,
+            highlightthickness=0
+        )
+        self.scrollbar = ttk.Scrollbar(
+            chat_container,
+            orient="vertical",
+            command=self.canvas.yview
+        )
+        self.scrollable_frame = tk.Frame(self.canvas, bg=self.bg_chat)
 
-    # ── Command Execution Logic ──────────────────────────────────────
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
 
-    def _execute_command_from_entry(self):
-        cmd = self.cmd_entry.get().strip()
-        if not cmd:
+        self.canvas_window = self.canvas.create_window(
+            (0, 0),
+            window=self.scrollable_frame,
+            anchor="nw"
+        )
+
+        # Make scrollable frame match canvas width
+        self.canvas.bind(
+            "<Configure>",
+            lambda e: self.canvas.itemconfig(self.canvas_window, width=e.width)
+        )
+
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Mouse wheel scrolling
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+        # ── 3. Suggestion Chips Bar ──────────────────────────────────
+        chips_frame = tk.Frame(self, bg=self.bg_main, padx=14, pady=6)
+        chips_frame.pack(fill=tk.X)
+
+        chips = [
+            ("🎨 Open Blender", "Open Blender"),
+            ("🧮 Open Calculator", "Open Calculator"),
+            ("📝 Open Notes", "Open Notes"),
+            ("🌐 Open Google", "Open https://google.com"),
+            ("📸 Take Screenshot", "Take a screenshot of my screen"),
+            ("📱 Wakeup Tablet", "Wakeup Android tablet"),
+        ]
+
+        for label, prompt in chips:
+            chip_btn = tk.Button(
+                chips_frame,
+                text=label,
+                font=("Helvetica", 9),
+                bg=self.bg_card,
+                fg=self.text_dim,
+                activebackground="#313244",
+                activeforeground="#ffffff",
+                relief=tk.FLAT,
+                command=lambda p=prompt: self._submit_chip_prompt(p),
+                padx=8,
+                pady=2,
+                cursor="pointinghand"
+            )
+            chip_btn.pack(side=tk.LEFT, padx=3)
+
+        # ── 4. Message Input Bar ─────────────────────────────────────
+        input_container = tk.Frame(self, bg=self.bg_main, padx=14, pady=10)
+        input_container.pack(fill=tk.X)
+
+        input_box = tk.Frame(
+            input_container,
+            bg=self.bg_card,
+            padx=10,
+            pady=6,
+            highlightthickness=1,
+            highlightbackground="#313244",
+            highlightcolor=self.accent_blue
+        )
+        input_box.pack(fill=tk.X)
+
+        self.entry_var = tk.StringVar()
+        self.entry = tk.Entry(
+            input_box,
+            textvariable=self.entry_var,
+            font=("Helvetica", 12),
+            bg=self.bg_card,
+            fg=self.text_light,
+            insertbackground="#ffffff",
+            relief=tk.FLAT
+        )
+        self.entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
+        self.entry.bind("<Return>", lambda e: self._on_send_click())
+        self.entry.focus_set()
+
+        self.send_btn = tk.Button(
+            input_box,
+            text="➤ Send",
+            font=("Helvetica", 10, "bold"),
+            bg=self.accent_blue,
+            fg="#11111b",
+            activebackground="#b4befe",
+            relief=tk.FLAT,
+            command=self._on_send_click,
+            padx=14,
+            pady=4,
+            cursor="pointinghand"
+        )
+        self.send_btn.pack(side=tk.RIGHT, padx=(8, 0))
+
+    # ── Chat Bubbles & Visual Elements ───────────────────────────────
+
+    def _add_user_bubble(self, message: str):
+        row = tk.Frame(self.scrollable_frame, bg=self.bg_chat, padx=12, pady=6)
+        row.pack(fill=tk.X, anchor="e")
+
+        bubble_container = tk.Frame(row, bg=self.bg_chat)
+        bubble_container.pack(side=tk.RIGHT, anchor="e")
+
+        header = tk.Label(
+            bubble_container,
+            text="You",
+            font=("Helvetica", 8, "bold"),
+            fg=self.text_dim,
+            bg=self.bg_chat
+        )
+        header.pack(anchor="e", padx=4, pady=(0, 2))
+
+        bubble = tk.Label(
+            bubble_container,
+            text=message,
+            font=("Helvetica", 11),
+            fg="#ffffff",
+            bg=self.bg_user_bubble,
+            wraplength=420,
+            justify=tk.LEFT,
+            padx=14,
+            pady=9
+        )
+        bubble.pack(anchor="e")
+        self._scroll_to_bottom()
+
+    def _add_ai_bubble(self, message: str) -> tk.Label:
+        row = tk.Frame(self.scrollable_frame, bg=self.bg_chat, padx=12, pady=6)
+        row.pack(fill=tk.X, anchor="w")
+
+        bubble_container = tk.Frame(row, bg=self.bg_chat)
+        bubble_container.pack(side=tk.LEFT, anchor="w")
+
+        header = tk.Label(
+            bubble_container,
+            text="🤖 Assistant",
+            font=("Helvetica", 8, "bold"),
+            fg=self.accent_blue,
+            bg=self.bg_chat
+        )
+        header.pack(anchor="w", padx=4, pady=(0, 2))
+
+        # Format markdown bold text slightly
+        clean_text = message.replace("**", "")
+
+        bubble = tk.Label(
+            bubble_container,
+            text=clean_text,
+            font=("Helvetica", 11),
+            fg=self.text_light,
+            bg=self.bg_ai_bubble,
+            wraplength=440,
+            justify=tk.LEFT,
+            padx=14,
+            pady=9
+        )
+        bubble.pack(anchor="w")
+        self._scroll_to_bottom()
+        return bubble
+
+    def _add_tool_pill(self, tool_name: str, desc: str):
+        row = tk.Frame(self.scrollable_frame, bg=self.bg_chat, padx=16, pady=3)
+        row.pack(fill=tk.X, anchor="w")
+
+        icon = "⚡"
+        if "open" in tool_name:
+            icon = "🚀"
+        elif "type" in tool_name:
+            icon = "⌨️"
+        elif "press" in tool_name:
+            icon = "🔤"
+        elif "click" in tool_name:
+            icon = "🖱️"
+        elif "screenshot" in tool_name:
+            icon = "📸"
+
+        pill = tk.Label(
+            row,
+            text=f"{icon}  {desc}",
+            font=("Menlo", 9),
+            fg=self.accent_amber,
+            bg=self.bg_tool_pill,
+            padx=10,
+            pady=4
+        )
+        pill.pack(side=tk.LEFT)
+        self._scroll_to_bottom()
+
+    def _add_screenshot_preview(self, b64_img: str):
+        """Render an inline screenshot thumbnail directly in the chat."""
+        try:
+            raw = base64.b64decode(b64_img)
+            img = Image.open(io.BytesIO(raw))
+            img.thumbnail((380, 240), Image.Resampling.LANCZOS)
+            tk_img = ImageTk.PhotoImage(img)
+            self._preview_refs.append(tk_img)
+
+            row = tk.Frame(self.scrollable_frame, bg=self.bg_chat, padx=16, pady=4)
+            row.pack(fill=tk.X, anchor="w")
+
+            preview_lbl = tk.Label(
+                row,
+                image=tk_img,
+                bg="#11111b",
+                highlightthickness=1,
+                highlightbackground="#45475a"
+            )
+            preview_lbl.pack(side=tk.LEFT)
+            self._scroll_to_bottom()
+        except Exception:
+            pass
+
+    def _scroll_to_bottom(self):
+        self.canvas.update_idletasks()
+        self.canvas.yview_moveto(1.0)
+
+    def _on_mousewheel(self, event):
+        self.canvas.yview_scroll(int(-1 * (event.delta)), "units")
+
+    # ── Sending & Processing Messages ────────────────────────────────
+
+    def _submit_chip_prompt(self, prompt: str):
+        self.entry_var.set(prompt)
+        self._on_send_click()
+
+    def _on_send_click(self):
+        msg = self.entry_var.get().strip()
+        if not msg or self._is_busy:
             return
-        self.cmd_entry.delete(0, tk.END)
-        self._run_custom_command(cmd)
 
-    def _run_custom_command(self, cmd_text: str, override_device: str = None):
-        if self._is_executing_command:
-            self._log("⚠️ Another command is currently executing, please wait...", tag="error")
-            return
+        self.entry_var.set("")
+        self._add_user_bubble(msg)
 
-        target_dev = override_device or self.cmd_device_var.get()
-        self._log(f"> {cmd_text}  (on {target_dev})", tag="cmd")
-
-        self._is_executing_command = True
-        self.run_btn.config(state=tk.DISABLED, text="Running...")
+        target_dev = self.device_var.get()
+        self._set_busy(True)
 
         def _worker():
+            def _action_cb(tool_name: str, desc: str):
+                self.after(0, lambda: self._add_tool_pill(tool_name, desc))
+
             try:
-                success, msg = self._parse_and_run(cmd_text, target_dev)
-                if success:
-                    self.after(0, lambda: self._log(f"✅ {msg}", tag="success"))
-                else:
-                    self.after(0, lambda: self._log(f"❌ {msg}", tag="error"))
+                reply = self.agent.process_message(
+                    user_message=msg,
+                    target_device=target_dev,
+                    on_action_callback=_action_cb
+                )
+                self.after(0, lambda: self._on_agent_reply(reply))
             except Exception as e:
-                self.after(0, lambda: self._log(f"❌ Error: {str(e)}", tag="error"))
+                self.after(0, lambda: self._on_agent_reply(f"❌ Error: {str(e)}"))
             finally:
-                self.after(0, self._finish_command_execution)
-                # Auto refresh preview after command completes
-                time.sleep(0.3)
-                self.after(0, self._capture_preview)
+                self.after(0, lambda: self._set_busy(False))
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _finish_command_execution(self):
-        self._is_executing_command = False
-        self.run_btn.config(state=tk.NORMAL, text="▶  Execute")
+    def _on_agent_reply(self, reply: str):
+        self._add_ai_bubble(reply)
 
-    def _parse_and_run(self, cmd: str, dev_id: str) -> (bool, str):
-        """
-        Parses human-friendly commands and maps them directly to ToolRouter actions.
-        Supported commands:
-          open <app> / launch <app>
-          open <url> (e.g. open https://...)
-          type <text>
-          click <x> <y>
-          click "<label>" (semantic click)
-          press <key> [modifiers]
-          scroll [up/down] [amount]
-          screenshot
-          tree
-        """
-        parts = cmd.strip().split()
-        if not parts:
-            return True, "Empty command"
+    def _set_busy(self, is_busy: bool):
+        self._is_busy = is_busy
+        if is_busy:
+            self.send_btn.config(state=tk.DISABLED, text="Thinking...")
+            self.status_sub_lbl.config(text="● Executing instructions on device...", fg=self.accent_amber)
+        else:
+            self.send_btn.config(state=tk.NORMAL, text="➤ Send")
+            self.status_sub_lbl.config(text="● Online • Ready to control Mac & Android", fg=self.accent_green)
 
-        verb = parts[0].lower()
-        rest = cmd[len(parts[0]):].strip()
+    def _send_welcome_message(self):
+        has_key = bool(self.agent.api_key)
+        key_note = (
+            "🔑 **Groq API Key**: Active (Llama 3.3 70B enabled)"
+            if has_key else
+            "💡 **Direct Execution Mode**: Active (Click 🔑 to add a Groq API key for autonomous AI reasoning)"
+        )
 
-        # 1. Open URL
-        if verb in ("open", "launch", "goto") and (rest.startswith("http://") or rest.startswith("https://") or rest.startswith("www.")):
-            url = rest if rest.startswith("http") else f"https://{rest}"
-            res = self.router.open_url(dev_id, url)
-            return True, f"Opened URL: {url}"
+        welcome = (
+            f"👋 **Hello! I'm your Computer Use Assistant.**\n\n"
+            f"I have direct access to your Mac and connected Android devices.\n\n"
+            f"**You can tell me to:**\n"
+            f"• *Open Blender*\n"
+            f"• *Open Calculator and do math*\n"
+            f"• *Open Notes and write a message*\n"
+            f"• *Go to google.com in browser*\n"
+            f"• *Take a screenshot*\n\n"
+            f"{key_note}"
+        )
+        self._add_ai_bubble(welcome)
 
-        # 2. Open Application
-        if verb in ("open", "launch", "app"):
-            app_name = rest
-            if not app_name:
-                return False, "Usage: open <Application Name>"
-            res = self.router.open_app(dev_id, app_name)
-            return True, f"Launched '{app_name}' on {dev_id}"
+    # ── Device & Settings Management ─────────────────────────────────
 
-        # 3. Type Text
-        if verb in ("type", "write", "input"):
-            text = rest
-            if not text:
-                return False, "Usage: type <text to type>"
-            res = self.router.type_text(dev_id, text)
-            if res.success:
-                return True, f"Typed text: '{text}'"
-            return False, f"Failed to type: {res.error}"
-
-        # 4. Press Key / Shortcut
-        if verb in ("press", "key", "shortcut"):
-            # Syntax: press enter, press cmd+c, press home, press space
-            tokens = rest.split("+")
-            if len(tokens) == 1:
-                key = tokens[0].strip()
-                res = self.router.press_key(dev_id, key=key)
-            else:
-                key = tokens[-1].strip()
-                modifiers = [t.strip() for t in tokens[:-1]]
-                res = self.router.press_key(dev_id, key=key, modifiers=modifiers)
-
-            if res.success:
-                return True, f"Pressed key '{rest}'"
-            return False, f"Keypress failed: {res.error}"
-
-        # 5. Click
-        if verb in ("click", "tap"):
-            # Check if coordinates: click 500 300
-            coord_match = re.match(r"^(\d+)\s+(\d+)$", rest)
-            if coord_match:
-                x = int(coord_match.group(1))
-                y = int(coord_match.group(2))
-                res = self.router.click(dev_id, x=x, y=y)
-                if res.success:
-                    return True, f"Clicked at ({x}, {y})"
-                return False, f"Click failed: {res.error}"
-
-            # Check if semantic element click: click "Submit" or click Submit
-            label = rest.strip('"\'')
-            if label:
-                res = self.router.click_ui_element(dev_id, query=label)
-                if res.success:
-                    return True, f"Clicked UI element matching '{label}'"
-                return False, f"Element click failed: {res.error}"
-
-            return False, "Usage: click <x> <y>  OR  click '<element label>'"
-
-        # 6. Scroll
-        if verb in ("scroll", "swipe"):
-            direction = rest.lower().strip()
-            delta_y = -100  # scroll down by default
-            if "up" in direction:
-                delta_y = 100
-            elif "down" in direction:
-                delta_y = -100
-
-            res = self.router.scroll(dev_id, delta_y=delta_y)
-            if res.success:
-                return True, f"Scrolled {direction or 'down'}"
-            return False, f"Scroll failed: {res.error}"
-
-        # 7. Screenshot
-        if verb in ("screenshot", "snap", "capture"):
-            shot = self.router.screenshot(dev_id, scale=0.5)
-            return True, f"Captured screen: {shot.width}x{shot.height}"
-
-        # 8. UI Tree Inspection
-        if verb in ("tree", "ui", "inspect"):
-            tree = self.router.get_ui_tree(dev_id, max_depth=3)
-            return True, f"Inspected UI tree for app: '{tree.get('app_name', 'Unknown')}'"
-
-        return False, f"Unknown command: '{cmd}'. Try: open, type, press, click, scroll, screenshot"
-
-    # ── Macros ───────────────────────────────────────────────────────
-
-    def _macro_textedit_hello(self):
-        """Macro that opens TextEdit, waits for launch, and types a welcome message."""
-        def _flow():
-            self._log("Executing macro: Open TextEdit & Type Message...", tag="cmd")
-            self.router.open_app("mac-primary", "TextEdit")
-            time.sleep(1.2)
-            # Create a new document with Cmd+N
-            self.router.press_key("mac-primary", key="n", modifiers=["cmd"])
-            time.sleep(0.5)
-            # Type message
-            msg = "Hello! The Computer Use Engine is fully working on your Mac without AI."
-            self.router.type_text("mac-primary", text=msg)
-            self._log("✅ TextEdit opened and message typed successfully!", tag="success")
-            time.sleep(0.3)
-            self.after(0, self._capture_preview)
-
-        threading.Thread(target=_flow, daemon=True).start()
-
-    # ── Device & Preview Management ──────────────────────────────────
-
-    def _refresh_device_list(self):
+    def _refresh_devices(self):
         self.registry.discover_devices()
         devices = self.registry.list_devices()
+        dev_ids = [d.id for d in devices]
 
-        self.device_listbox.delete(0, tk.END)
-        device_ids = []
+        self.device_cb["values"] = dev_ids
+        if dev_ids and self.device_var.get() not in dev_ids:
+            self.device_var.set(dev_ids[0])
 
-        for d in devices:
-            status_symbol = "🟢" if d.status.is_connected else "🔴"
-            display_text = f"{status_symbol}  [{d.platform.upper()}]  {d.name}  ({d.id})"
-            self.device_listbox.insert(tk.END, display_text)
-            device_ids.append(d.id)
+    def _show_api_key_dialog(self):
+        win = tk.Toplevel(self)
+        win.title("Configure Groq API Key")
+        win.geometry("460x220")
+        win.configure(bg=self.bg_header)
+        win.transient(self)
+        win.grab_set()
 
-        self.device_count_lbl.config(text=f"{len(devices)} device(s) online")
-        self.cmd_device_cb["values"] = device_ids
-        if device_ids and self.cmd_device_var.get() not in device_ids:
-            self.cmd_device_var.set(device_ids[0])
+        tk.Label(
+            win,
+            text="🔑 Groq API Key Configuration",
+            font=("Helvetica", 13, "bold"),
+            fg=self.text_light,
+            bg=self.bg_header
+        ).pack(anchor="w", padx=16, pady=(16, 6))
 
-    def _on_cmd_device_change(self, event):
-        self._capture_preview()
+        tk.Label(
+            win,
+            text="Enter your Groq key (gsk_...) to enable autonomous Llama 3.3 70B reasoning:",
+            font=("Helvetica", 9),
+            fg=self.text_dim,
+            bg=self.bg_header,
+            wraplength=420,
+            justify=tk.LEFT
+        ).pack(anchor="w", padx=16, pady=(0, 10))
 
-    def _capture_preview(self):
-        dev_id = self.cmd_device_var.get()
-        if not dev_id:
-            return
-
-        self.preview_meta_lbl.config(text="Capturing...")
-
-        def _worker():
-            t0 = time.time()
-            try:
-                shot = self.router.screenshot(dev_id, scale=0.5, format="jpeg")
-                dt = (time.time() - t0) * 1000.0
-
-                raw_bytes = base64.b64decode(shot.image_base64)
-                img = Image.open(io.BytesIO(raw_bytes))
-
-                canvas_w = self.preview_canvas.winfo_width() or 400
-                canvas_h = self.preview_canvas.winfo_height() or 260
-
-                img.thumbnail((canvas_w - 10, canvas_h - 10), Image.Resampling.LANCZOS)
-                tk_img = ImageTk.PhotoImage(img)
-
-                self.after(0, lambda: self._display_preview(tk_img, shot.width, shot.height, dt))
-            except Exception as e:
-                self.after(0, lambda: self.preview_meta_lbl.config(text=f"Error: {str(e)[:30]}"))
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def _display_preview(self, tk_img, orig_w, orig_h, latency_ms):
-        self._preview_image = tk_img
-        self.preview_canvas.delete("all")
-        canvas_w = self.preview_canvas.winfo_width()
-        canvas_h = self.preview_canvas.winfo_height()
-
-        self.preview_canvas.create_image(
-            canvas_w // 2,
-            canvas_h // 2,
-            image=tk_img,
-            anchor=tk.CENTER
+        key_var = tk.StringVar(value=self.agent.api_key)
+        entry = tk.Entry(
+            win,
+            textvariable=key_var,
+            font=("Menlo", 11),
+            bg=self.bg_card,
+            fg="#ffffff",
+            show="•",
+            insertbackground="#ffffff",
+            relief=tk.FLAT
         )
-        self.preview_meta_lbl.config(text=f"{orig_w}x{orig_h} • {latency_ms:.0f}ms")
+        entry.pack(fill=tk.X, padx=16, ipady=4)
+        entry.focus_set()
+
+        btn_row = tk.Frame(win, bg=self.bg_header)
+        btn_row.pack(fill=tk.X, padx=16, pady=16)
+
+        def _save():
+            k = key_var.get().strip()
+            self.agent.save_api_key(k)
+            self.agent.api_key = k
+            messagebox.showinfo("Saved", "Groq API key updated successfully!", parent=win)
+            win.destroy()
+
+        save_btn = tk.Button(
+            btn_row,
+            text="Save Key",
+            font=("Helvetica", 10, "bold"),
+            bg=self.accent_green,
+            fg="#11111b",
+            relief=tk.FLAT,
+            command=_save,
+            padx=14,
+            pady=4,
+            cursor="pointinghand"
+        )
+        save_btn.pack(side=tk.RIGHT)
+
+        cancel_btn = tk.Button(
+            btn_row,
+            text="Cancel",
+            font=("Helvetica", 10),
+            bg="#313244",
+            fg=self.text_dim,
+            relief=tk.FLAT,
+            command=win.destroy,
+            padx=10,
+            pady=4,
+            cursor="pointinghand"
+        )
+        cancel_btn.pack(side=tk.RIGHT, padx=(0, 8))
 
     def _toggle_emergency_stop(self):
         if self.guardrails.is_emergency_stopped():
             self.guardrails.set_emergency_stop(False)
-            messagebox.showinfo("Control Resumed", "Emergency stop lifted. Normal operation resumed.")
+            self.stop_btn.config(text="🛑 Stop", bg="#f38ba8")
+            self.status_sub_lbl.config(text="● Online • Ready to control Mac & Android", fg=self.accent_green)
+            messagebox.showinfo("Resumed", "Device control resumed successfully!")
         else:
             self.guardrails.set_emergency_stop(True)
-            messagebox.showwarning("EMERGENCY STOP", "Emergency stop ENGAGED! All tool operations are now frozen.")
+            self.stop_btn.config(text="🟢 Resume", bg=self.accent_green)
+            self.status_sub_lbl.config(text="🛑 EMERGENCY STOP ENGAGED", fg=self.accent_red)
+            messagebox.showwarning("EMERGENCY STOP", "Emergency stop engaged! All synthetic input halted.")
 
-        self._update_safety_indicator()
-
-    def _update_safety_indicator(self):
-        if self.guardrails.is_emergency_stopped():
-            self.status_badge.config(
-                text="🛑 EMERGENCY STOPPED",
-                fg="#11111b",
-                bg=self.accent_red
-            )
-            self.emergency_btn.config(
-                text="🟢  RESUME DEVICE CONTROL",
-                bg=self.accent_green,
-                fg="#11111b"
-            )
-        else:
-            self.status_badge.config(
-                text="● ENGINE ACTIVE",
-                fg=self.accent_green,
-                bg="#181825"
-            )
-            self.emergency_btn.config(
-                text="🛑  ENGAGE EMERGENCY STOP",
-                bg=self.accent_red,
-                fg="#11111b"
-            )
-
-    def _auto_poll(self):
-        self._update_safety_indicator()
-        self.after(5000, self._auto_poll)
+    def _clear_chat(self):
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+        self._send_welcome_message()
 
 
 if __name__ == "__main__":
-    app = ComputerUseApp()
+    app = ChatbotApp()
     app.mainloop()
