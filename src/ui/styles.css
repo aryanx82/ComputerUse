@@ -186,17 +186,25 @@ body {
   color: #71717a;
 }
 
+.recents-list {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  max-height: calc(100vh - 240px);
+}
+
 .sidebar-item {
-  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
   font-size: 13px;
   color: #d4d4d8;
   cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   border-radius: 6px;
   margin: 1px 8px;
-  transition: background 0.15s ease;
+  transition: all 0.15s ease;
+  user-select: none;
 }
 
 .sidebar-item:hover {
@@ -204,9 +212,44 @@ body {
   color: #ffffff;
 }
 
+.sidebar-item.active {
+  background-color: #27272a;
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.sidebar-chat-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+
+.sidebar-chat-del {
+  opacity: 0;
+  cursor: pointer;
+  color: #71717a;
+  padding: 2px 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  transition: all 0.15s ease;
+  margin-left: 6px;
+}
+
+.sidebar-item:hover .sidebar-chat-del {
+  opacity: 1;
+}
+
+.sidebar-chat-del:hover {
+  color: #f43f5e;
+  background: rgba(244, 63, 94, 0.15);
+}
+
 .sidebar-item.empty {
   color: #71717a;
   cursor: default;
+  padding: 8px 16px;
 }
 .sidebar-item.empty:hover {
   background: transparent;
