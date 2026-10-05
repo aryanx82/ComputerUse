@@ -447,19 +447,30 @@ class GroqAgent:
         """
         lower = text.strip().lower()
 
+        # 0. In-chat Groq API key detection
+        gsk_match = re.search(r"(gsk_[A-Za-z0-9_-]{20,})", text)
+        if gsk_match:
+            key = gsk_match.group(1)
+            self.save_api_key(key)
+            self.api_key = key
+            try:
+                self._call_groq_api([{"role": "user", "content": "Hello"}])
+                return "🎉 **Groq API Key activated!**\n\nI am now powered by **Llama 3.3 70B** with full autonomous reasoning and device control active. What would you like to build or automate today?"
+            except Exception as e:
+                return f"🔑 Saved your Groq API key! (Note: API check returned: {e}). I'm ready to take your instructions."
+
         # 1. Open App (e.g. "open blender", "launch calculator", "open notes")
         open_match = re.search(r"^(?:please\s+)?(?:open|launch|start|run)\s+(?:the\s+)?([a-zA-Z0-9\s\.\-_]+)$", lower)
         if open_match and not ("http://" in lower or "https://" in lower or ".com" in lower):
             app_raw = open_match.group(1).strip()
-            # Title case app name (e.g. 'blender' -> 'Blender')
             app_name = app_raw.capitalize() if len(app_raw) > 2 else app_raw.upper()
             if on_action_callback:
                 on_action_callback("open_app", f"Opening {app_name} on {target_device}...")
             res = self.execute_tool("open_app", {"app_name": app_name}, target_device)
             if res.get("success"):
-                return f"✅ Launched **{app_name}** on your {target_device}!\n\n*(💡 Tip: Add your Groq API key via the 🔑 button in the top bar to enable full multi-step reasoning.)*"
+                return f"I've launched **{app_name}** for you on {target_device}! Let me know if you want me to do anything inside it."
             else:
-                return f"❌ Failed to launch {app_name}: {res.get('error')}"
+                return f"I tried to launch **{app_name}**, but encountered an issue: {res.get('error')}. Is it installed on your device?"
 
         # 2. Open URL / Website
         url_match = re.search(r"(?:open|goto|browse|navigate to)\s+(https?://\S+|www\.\S+|\S+\.(?:com|org|net|io|edu|gov)\S*)", text, re.IGNORECASE)
@@ -470,7 +481,7 @@ class GroqAgent:
             if on_action_callback:
                 on_action_callback("open_url", f"Opening {url}...")
             res = self.execute_tool("open_url", {"url": url}, target_device)
-            return f"✅ Opened [{url}]({url}) in your default browser!"
+            return f"I've opened [{url}]({url}) in your browser!"
 
         # 3. Type text (e.g. "type Hello World" or "write Welcome to Python")
         type_match = re.search(r"^(?:please\s+)?(?:type|write|input)\s+(.+)$", text, re.IGNORECASE)
@@ -480,8 +491,8 @@ class GroqAgent:
                 on_action_callback("type_text", f"Typing: \"{content}\"...")
             res = self.execute_tool("type_text", {"text": content}, target_device)
             if res.get("success"):
-                return f"✅ Typed text into active window: *\"{content}\"*"
-            return f"❌ Could not type text: {res.get('error')}"
+                return f"Done! I've typed *\"{content}\"* into the active window."
+            return f"Couldn't type the text: {res.get('error')}"
 
         # 4. Press shortcut or key
         press_match = re.search(r"^(?:please\s+)?(?:press|hit)\s+(.+)$", lower)
@@ -493,14 +504,14 @@ class GroqAgent:
             if on_action_callback:
                 on_action_callback("press_key", f"Pressing key: {key_spec}...")
             res = self.execute_tool("press_key", {"key": key, "modifiers": mods}, target_device)
-            return f"✅ Pressed key: `{key_spec}`"
+            return f"Pressed `{key_spec}` for you."
 
         # 5. Take Screenshot
         if "screenshot" in lower or "screen" in lower or "capture" in lower:
             if on_action_callback:
                 on_action_callback("screenshot", f"Capturing screenshot of {target_device}...")
             res = self.execute_tool("screenshot", {}, target_device)
-            return f"📸 Captured screen from **{target_device}**!"
+            return f"Here is the fresh screen capture from your **{target_device}**!"
 
         # 6. Click
         click_match = re.search(r"click\s+(?:at\s+)?(\d+)[,\s]+(\d+)", lower)
@@ -509,7 +520,7 @@ class GroqAgent:
             if on_action_callback:
                 on_action_callback("click", f"Clicking at ({x}, {y})...")
             res = self.execute_tool("click", {"x": x, "y": y}, target_device)
-            return f"🖱️ Clicked at coordinate `({x}, {y})`."
+            return f"Clicked at `({x}, {y})`."
 
         # 7. Semantic button click (e.g. "click 'Done'", "click save")
         semantic_click = re.search(r"click\s+(?:on\s+)?(?:button\s+)?[\"']?([^\"'\n]+)[\"']?", text, re.IGNORECASE)
@@ -519,26 +530,28 @@ class GroqAgent:
                 on_action_callback("click_ui_element", f"Searching and clicking element: '{label}'...")
             res = self.execute_tool("click_ui_element", {"query": label}, target_device)
             if res.get("success"):
-                return f"🖱️ Found and clicked UI element: **{label}**"
+                return f"Found and clicked the **{label}** button!"
 
-        # 8. Conversational / Help
-        if any(w in lower for w in ["hi", "hello", "hey", "help", "who are you", "what can you do"]):
+        # 8. Natural Greetings (hlo, hlw, hello, hi, hey, sup, yo, etc.)
+        greeting_words = ["hlo", "hlw", "helo", "hello", "hi", "hey", "yo", "sup", "howdy", "good morning", "good evening", "good afternoon"]
+        if any(w == lower or lower.startswith(w + " ") or lower.endswith(" " + w) for w in greeting_words):
+            return "Hey Aryan! 👋 What would you like to build or automate on your Mac or tablet today?"
+
+        # 9. General Question or Chat Conversation
+        if any(w in lower for w in ["how are you", "who are you", "what can you do", "help", "what is this"]):
             return (
-                "👋 **Hello! I'm your Computer Use Chatbot.**\n\n"
-                "I can control your Mac and Android tablet directly! Try saying:\n"
-                "• **\"Open Blender\"**\n"
-                "• **\"Open Calculator\"**\n"
-                "• **\"Open Notes and write hello\"**\n"
-                "• **\"Go to youtube.com\"**\n"
-                "• **\"Take a screenshot\"**\n\n"
-                "🔑 *For full autonomous reasoning across complex tasks, click the 🔑 button in the top bar to set your Groq API key!*"
+                "I'm your **Computer Use Assistant**! 🤖\n\n"
+                "I can physically see and interact with your Mac and Android tablet. You can ask me to:\n"
+                "• **Open apps**: *\"Open Blender\"*, *\"Launch Calculator\"*, *\"Open Safari\"*\n"
+                "• **Automate typing**: *\"Open Notes and write hello\"*\n"
+                "• **Web browsing**: *\"Go to youtube.com\"*\n"
+                "• **Screen inspection**: *\"Take a screenshot of my Mac\"*\n\n"
+                "*(💡 You can also paste your Groq API key right here in chat to enable full autonomous Llama 3.3 70B reasoning!)*"
             )
 
-        # Default fallback: try to launch as an app or inform user
+        # 10. Default friendly conversational response
         return (
-            f"I understood: *\"{text}\"*\n\n"
-            f"To execute this command:\n"
-            f"• Say **\"Open <app>\"** to launch an application.\n"
-            f"• Say **\"Type <text>\"** to type into the focused app.\n"
-            f"• Click the **🔑 Groq Key** button in the header so I can autonomously interpret any open-ended command with AI!"
+            f"Got it! To help you with *\"{text}\"*, I can control your Mac or tablet directly.\n\n"
+            f"Would you like me to open an app, navigate to a website, or perform a specific action? "
+            f"Just let me know what you'd like done!"
         )
